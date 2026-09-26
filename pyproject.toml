@@ -1,0 +1,9 @@
+[project]
+name = "telebot"
+version = "0.1.0"
+description = "Telegram-to-shell command bridge"
+requires-python = ">=3.12"
+dependencies = [
+    "requests>=2.31,<3",
+    "yt-dlp",
+]

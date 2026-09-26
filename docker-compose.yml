@@ -1,0 +1,27 @@
+services:
+  telebot:
+    build: .
+    image: telebot:latest
+    container_name: telebot
+    restart: unless-stopped
+    # Files written to DOWNLOADS_DIR (e.g. by yt-dlp) are owned by whatever
+    # user the container runs as. Default to root's UID:GID unless PUID/PGID
+    # are set, so they land owned by you instead of root -- match the owner
+    # of your downloads folder, e.g. `id <your-nas-user>`.
+    user: "${PUID:-0}:${PGID:-0}"
+    environment:
+      HOME: /tmp
+    env_file:
+      - .env
+    volumes:
+      # Put any scripts your COMMAND needs to call in ./scripts, which is
+      # mounted read-only at /scripts inside the container. SCRIPTS_DIR/
+      # DOWNLOADS_DIR let nas-deploy.sh point these at real paths on the NAS
+      # filesystem instead of paths on your dev machine (bind-mount sources
+      # are resolved by whichever Docker engine actually runs the
+      # container). Local `docker compose up` just uses the defaults below.
+      - ${SCRIPTS_DIR:-./scripts}:/scripts:ro
+      # Downloads land here. Defaults to a folder next to this compose file
+      # for local use; nas-deploy.sh points it at real NAS storage (e.g. a
+      # Synology shared folder like /volume1/downloads).
+      - ${DOWNLOADS_DIR:-./downloads}:/downloads
