@@ -2,6 +2,7 @@ FROM python:3.12-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg curl unzip ca-certificates \
+    libchromaprint-tools opencc \
     && rm -rf /var/lib/apt/lists/*
 
 # yt-dlp needs a JS runtime to fully support YouTube's signature decryption.

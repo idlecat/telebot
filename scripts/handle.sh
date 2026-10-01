@@ -16,14 +16,17 @@ case "$msg" in
     ;;
   http://*|https://*)
     mkdir -p "$DOWNLOAD_DIR"
-    yt-dlp \
+    output="$(yt-dlp \
       --no-progress \
-      --restrict-filenames \
       -x --audio-format aac --audio-quality 0 \
       --paths "$DOWNLOAD_DIR" \
       -o "%(title)s [%(id)s].%(ext)s" \
       --print "after_move:Saved: %(filepath)s" \
-      -- "$msg"
+      -- "$msg")"
+    echo "$output"
+    echo "$output" | sed -n 's/^Saved: //p' | while IFS= read -r f; do
+      python3 /scripts/backfill_metadata.py "$f"
+    done
     ;;
   *)
     echo "Unknown command: $msg"

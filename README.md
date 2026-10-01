@@ -64,6 +64,14 @@ container.
   uv lock -P yt-dlp
   docker compose up -d --build
   ```
+- After each file is saved, `scripts/backfill_metadata.py` fingerprints it
+  (Chromaprint/`fpcalc`), looks the fingerprint up against AcoustID to get
+  real artist/title/album from MusicBrainz, converts any traditional-Chinese
+  result to simplified, and writes the tags — yt-dlp's own tags are just the
+  video title, not proper metadata. One result line per file (tagged, no
+  confident match, or an error) is appended to the reply. Requires
+  `ACOUSTID_API_KEY` (free, from https://acoustid.org/api-key); without it,
+  downloads are left as-is and the reply says so.
 - The whole bot is single-threaded: while a download runs, it won't poll for
   or process any other Telegram messages (including from other allowed
   users) until it finishes. Fine for personal/light use; say so if you want
@@ -125,6 +133,7 @@ container's environment, same as any other Compose deployment).
 | `STARTUP_GRACE_PERIOD` | no | `60` | Ignore messages older than this many seconds at startup |
 | `POLL_TIMEOUT` | no | `30` | Long-poll timeout passed to Telegram's `getUpdates` |
 | `LOG_LEVEL` | no | `INFO` | Python logging level |
+| `ACOUSTID_API_KEY` | no | — | Enables metadata backfill on downloads (see above); free key from acoustid.org/api-key |
 
 ## Running without Docker
 
