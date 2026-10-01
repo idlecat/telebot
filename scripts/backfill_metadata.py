@@ -146,16 +146,28 @@ def strip_junk(title):
     return title
 
 
+QUALITY_TAG = re.compile(r"^(\d+[PK]|\d+\s*帧|\d+\s*fps|HD|4K|8K|高清|超清)\b", re.IGNORECASE)
+
+
 def parse_brackets(base):
     """"<Artist(s)> -《<Title>》<junk>" or "<Artist(s)>《<Title>》<junk>"."""
     best = None
     for lb, rb in BRACKET_PAIRS:
-        li = base.find(lb)
-        ri = base.find(rb, li + 1) if li != -1 else -1
-        if li == -1 or ri == -1:
-            continue
-        if best is None or li < best[0]:
-            best = (li, ri, lb, rb)
+        start = 0
+        while True:
+            li = base.find(lb, start)
+            ri = base.find(rb, li + 1) if li != -1 else -1
+            if li == -1 or ri == -1:
+                break
+            # Bilibili-style uploads often lead with a resolution/quality tag
+            # bracket, e.g. "【1080P 60帧】Artist《Title》..." -- that's not
+            # the title, so skip it and keep looking rightward for one that is.
+            if QUALITY_TAG.match(base[li + 1:ri].strip()):
+                start = ri + 1
+                continue
+            if best is None or li < best[0]:
+                best = (li, ri, lb, rb)
+            break
     if best is None:
         return None, None
     li, ri, _, _ = best
@@ -165,16 +177,22 @@ def parse_brackets(base):
     if re.search(r"(電影|电影|movie)\s*$", base[:li], re.IGNORECASE):
         return None, None
     title = cjk_only(base[li + 1:ri])
-    prefix = re.sub(r"\s*-\s*$", "", base[:li]).rstrip()
+    # Drop any other bracket-tag content (e.g. a skipped quality tag) sitting
+    # in the prefix before splitting it into artist name(s) -- otherwise its
+    # partial text (cut off wherever cjk_only()'s Latin-run search lands)
+    # pollutes the extracted artist.
+    prefix = re.sub(r"[《「【『][^》」】』]*[》」】』]", "", base[:li])
+    prefix = re.sub(r"\s*-\s*$", "", prefix).rstrip()
     parts = re.split(r"[&/⧸]", prefix)
     artists = [cjk_only(p) for p in parts if cjk_only(p)]
     # A real artist/band name here is almost always 2-5 CJK characters; a
     # longer unbroken run (no delimiter to split on) is far more likely to be
     # a name glued directly to promotional text, e.g. a CCTV clip titled
     # "谭咏麟经典咏唱！一首《定风波》..." ("Alan Tam classically sings! A...")
-    # where naively taking the whole prefix as the artist swallows the praise
-    # text too. Bail rather than guess.
-    if any(len(a) > 6 for a in artists):
+    # or "刘欢零点唱响《我欲成仙》" ("Liu Huan sang out at midnight...", where
+    # 零点 means "midnight", not a second artist) -- naively taking the whole
+    # prefix as the artist swallows that text too. Bail rather than guess.
+    if any(len(a) > 5 for a in artists):
         return None, None
     artist = ", ".join(dict.fromkeys(artists))
     return artist, title
