@@ -4,7 +4,6 @@
 set -eu
 
 msg="$1"
-DOWNLOAD_DIR="${DOWNLOAD_DIR:-/downloads}"
 
 case "$msg" in
   ping)
@@ -15,18 +14,8 @@ case "$msg" in
     df -h
     ;;
   http://*|https://*)
-    mkdir -p "$DOWNLOAD_DIR"
-    output="$(yt-dlp \
-      --no-progress \
-      -x --audio-format aac --audio-quality 0 \
-      --paths "$DOWNLOAD_DIR" \
-      -o "%(title)s [%(id)s].%(ext)s" \
-      --print "after_move:Saved: %(filepath)s" \
-      -- "$msg")"
-    echo "$output"
-    echo "$output" | sed -n 's/^Saved: //p' | while IFS= read -r f; do
-      python3 /scripts/backfill_metadata.py "$f"
-    done
+    # Single video or playlist: download, tag, dedup, file into artist folder.
+    exec python3 -u "$(dirname "$0")/download.py" "$msg"
     ;;
   *)
     echo "Unknown command: $msg"

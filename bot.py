@@ -3,14 +3,19 @@
 
 Polls Telegram for messages from an allowlisted set of user IDs, runs a
 single configured command with the message text as its final argument, and
-replies with the command's combined stdout/stderr output.
+replies with the command's combined stdout/stderr output. Output is streamed
+back in batches while the command runs, so long jobs (e.g. downloading a
+playlist) report progress instead of going silent until they finish.
 """
 
 import logging
 import os
+import queue
 import shlex
+import signal
 import subprocess
 import sys
+import threading
 import time
 
 import requests
@@ -36,6 +41,7 @@ class Config:
         self.command_timeout = float(os.environ.get("COMMAND_TIMEOUT", "60"))
         self.startup_grace_period = float(os.environ.get("STARTUP_GRACE_PERIOD", "60"))
         self.poll_timeout = int(os.environ.get("POLL_TIMEOUT", "30"))
+        self.progress_interval = float(os.environ.get("PROGRESS_INTERVAL", "15"))
 
     @staticmethod
     def _require(name):
@@ -88,24 +94,84 @@ def send_message(config, chat_id, text):
             log.exception("Failed to send message to chat %s", chat_id)
 
 
-def run_command(config, message_text):
+def run_command(config, message_text, emit):
+    """Run the command, calling emit(text) with new output at most every
+    progress_interval seconds and once more with whatever is left at exit.
+    A command that finishes quickly therefore produces a single reply."""
     argv = config.command_argv + [message_text]
     try:
-        result = subprocess.run(
+        # Own session/process group, so a timeout kills the command's
+        # children (e.g. yt-dlp's ffmpeg) too, not just the top process.
+        proc = subprocess.Popen(
             argv,
-            capture_output=True,
-            timeout=config.command_timeout,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
+            errors="replace",  # stray non-UTF-8 output mustn't kill the reader
+            bufsize=1,
+            start_new_session=True,
         )
-    except subprocess.TimeoutExpired:
-        return f"Command timed out after {config.command_timeout}s"
     except OSError as exc:
-        return f"Failed to run command: {exc}"
+        emit(f"Failed to run command: {exc}")
+        return
 
-    output = (result.stdout or "") + (result.stderr or "")
-    if result.returncode != 0:
-        output += f"\n[exit code {result.returncode}]"
-    return output.strip()
+    lines = queue.Queue()
+
+    def pump():
+        try:
+            for line in proc.stdout:
+                lines.put(line)
+        finally:
+            lines.put(None)
+
+    threading.Thread(target=pump, daemon=True).start()
+
+    deadline = time.monotonic() + config.command_timeout
+    last_flush = time.monotonic()
+    buf = []
+    emitted = False
+    timed_out = False
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            timed_out = True
+            break
+        try:
+            line = lines.get(timeout=min(1.0, remaining))
+        except queue.Empty:
+            line = ""
+        if line is None:
+            break
+        if line:
+            buf.append(line)
+        if buf and time.monotonic() - last_flush >= config.progress_interval:
+            emit("".join(buf).strip())
+            buf, emitted = [], True
+            last_flush = time.monotonic()
+
+    if timed_out:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    returncode = proc.wait()
+    while True:
+        try:
+            line = lines.get(timeout=1.0)
+        except queue.Empty:
+            break
+        if line is None:
+            break
+        buf.append(line)
+
+    tail = "".join(buf).strip()
+    if timed_out:
+        tail += f"\nCommand timed out after {config.command_timeout}s"
+    elif returncode != 0:
+        tail += f"\n[exit code {returncode}]"
+    tail = tail.strip()
+    if tail or not emitted:
+        emit(tail)
 
 
 def handle_update(config, update, startup_time):
@@ -128,8 +194,7 @@ def handle_update(config, update, startup_time):
         return
 
     log.info("Running command for user %s: %r", user_id, text)
-    output = run_command(config, text)
-    send_message(config, chat_id, output)
+    run_command(config, text, lambda output: send_message(config, chat_id, output))
 
 
 def main():

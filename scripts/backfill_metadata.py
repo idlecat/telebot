@@ -39,6 +39,10 @@ import urllib.request
 from mutagen import File as MutagenFile
 from mutagen.id3 import ID3, ID3NoHeaderError
 
+from library import canonical_artist, load_raw_aliases
+
+ALIAS_NAMES = load_raw_aliases()  # "G.E.M." -> "邓紫棋", as written in the file
+
 CONFIDENCE_THRESHOLD = 0.5
 SEP = "\x01"
 
@@ -108,6 +112,7 @@ TRAILING_PAREN_GROUP = re.compile(r"[\(（][^()（）]*[\)）]\s*$")
 JUNK_SUFFIXES = [
     "Official Music Video", "Official MV", "Official Lyric Video", "Official Lyrics Video",
     "Lyrics Video", "Lyric Video", "官方歌詞版", "官方MV", "官方頻道", "歌詞版", "MV",
+    "Lyrics", "歌詞", "歌词",
 ]
 # Not a real artist name: a spoken preface segment, "Medley" (a multi-song
 # mashup), a movie reference, or a bare year -- these only appear here because
@@ -265,9 +270,73 @@ def write_tags(path, artist, title, album):
 
 
 def process(path, api_key):
+    return identify_and_tag(path, api_key)[0]
+
+
+def identify_and_tag(path, api_key, hint=None, given=None):
+    """Returns (summary line, artist, title); artist/title are None if the
+    file couldn't be identified or tagged. `hint` is the source site's own
+    {"artist", "title", "album"} metadata when it has any (YouTube Music
+    tracks do), tried after AcoustID and before filename parsing. `given` is
+    the same shape, typed by the user alongside the link: it overrides
+    whatever identification finds, and if it has both artist and title,
+    identification is skipped altogether."""
     base = os.path.basename(path)
-    album = None
-    source = None
+    given = {k: v for k, v in (given or {}).items() if v}
+
+    if given.get("artist") and given.get("title"):
+        artist, title, album = given["artist"], given["title"], given.get("album")
+        source = "given in message"
+    else:
+        artist, title, album, source, acoustid_note = auto_identify(path, api_key, hint)
+        if given.get("artist"):
+            if source is None:
+                # Nothing identified the song, but with the artist known the
+                # video title (minus the usual junk) is a fair title.
+                title = parse_filename(path)[1] or title_without_artist(base, given["artist"])
+                source = "artist given in message, title from video title"
+            else:
+                source = f"artist given in message, rest from {source}"
+            artist = given["artist"]
+        elif given.get("title") and source is not None:
+            title = given["title"]
+            source = f"title given in message, rest from {source}"
+        if source is None:
+            return f"? No match from AcoustID ({acoustid_note}) or filename; left {base} untagged", None, None
+        album = given.get("album") or album
+
+    artist, title, album = simplify([artist, title, album or ""])
+    # MusicBrainz/uploaders often credit an English or stage name (e.g.
+    # "G.E.M.", "Sandy Lam") -- map it to the name the library uses.
+    artist = canonical_artist(artist)
+    album = album or None
+    if not write_tags(path, artist, title, album):
+        return f"✗ Matched {artist} - {title} but could not write tags to {base}", None, None
+
+    album_part = f", album {album}" if album else ""
+    return f"✓ Tagged {base} as {artist} - {title}{album_part} ({source})", artist, title
+
+
+def title_without_artist(base, artist):
+    """Video title minus the [id], the artist's name (in any script or alias)
+    and the usual junk: '鄧紫棋 泡沫 歌詞 [id].m4a' + '邓紫棋' -> '泡沫'."""
+    text, simplified_artist = simplify([YTID.sub("", os.path.splitext(base)[0]), artist])
+    artist = canonical_artist(simplified_artist)
+    names = {simplified_artist, artist} | {
+        alias for alias, name in ALIAS_NAMES.items() if name == artist
+    }
+    for name in sorted(names, key=len, reverse=True):
+        text = re.sub(re.escape(name), " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"[#\s\-–—|｜:：]+", " ", text).strip()
+    return strip_junk(text) or text
+
+
+def auto_identify(path, api_key, hint):
+    """AcoustID, then site metadata, then filename parsing. Returns
+    (artist, title, album, source, acoustid_note); source is None if all
+    three came up empty."""
+    artist = title = album = source = None
+    acoustid_note = "matched"
 
     if not api_key:
         acoustid_note = "ACOUSTID_API_KEY not set, skipped"
@@ -287,20 +356,15 @@ def process(path, api_key):
                 else:
                     acoustid_note = f"no confident AcoustID match (score {m['score'] if m else 0:.2f})"
 
+    if source is None and hint and hint.get("artist") and hint.get("title"):
+        artist, title, album = hint["artist"], hint["title"], hint.get("album") or ""
+        source = f"site metadata, {acoustid_note}"
+
     if source is None:
         artist, title = parse_filename(path)
         if artist and title:
             source = f"filename parse, {acoustid_note}"
-        else:
-            return f"? No match from AcoustID ({acoustid_note}) or filename; left {base} untagged"
-
-    artist, title, album = simplify([artist, title, album or ""])
-    album = album or None
-    if not write_tags(path, artist, title, album):
-        return f"✗ Matched {artist} - {title} but could not write tags to {base}"
-
-    album_part = f", album {album}" if album else ""
-    return f"✓ Tagged {base} as {artist} - {title}{album_part} ({source})"
+    return artist, title, album, source, acoustid_note
 
 
 def main():

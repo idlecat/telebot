@@ -43,39 +43,62 @@ fine behind NAT on a home NAS.
    SSH](#deploying-to-a-nas-over-ssh) below.
 6. Message your bot on Telegram and confirm you get a reply.
 
-## Downloading videos (yt-dlp)
+## Downloading music (yt-dlp)
 
 `scripts/handle.sh` treats any message starting with `http://` or `https://`
-as a download link and runs `yt-dlp` on it. `yt-dlp` and `ffmpeg` (needed to
-merge separate video/audio streams) are installed in the Docker image, along
-with `deno` (a JS runtime yt-dlp needs for full YouTube support), so nothing
-extra needs to be installed on the NAS itself — everything runs inside the
-container.
+as a download link and hands it to `scripts/download.py`. `yt-dlp` and
+`ffmpeg` are installed in the Docker image, along with `deno` (a JS runtime
+yt-dlp needs for full YouTube support), so nothing extra needs to be
+installed on the NAS itself.
 
-- Downloaded files are written to `/downloads` inside the container. Running
-  `docker compose` directly, that maps to `./downloads` next to this repo by
-  default — change it to a real folder on your NAS's storage if you're
-  running Compose straight on the NAS. Using `nas-deploy.sh` instead, it's
-  controlled by `--downloads-dir` (see below).
-- `COMMAND_TIMEOUT` is set to `1800` (30 minutes) in `.env` to give downloads
-  room to finish; raise it further for long videos.
+- **Single videos or playlists.** A playlist link downloads every item (up to
+  `MAX_PLAYLIST_ITEMS`, default 200); an unavailable item is reported and
+  skipped rather than aborting the rest. Each song is tagged and filed as
+  soon as it finishes, and the bot streams one line per song back to
+  Telegram every `PROGRESS_INTERVAL` seconds instead of going silent until
+  the whole playlist is done.
+- **Telling it what the song is.** Anything after the link overrides
+  automatic identification -- useful for uploads with messy titles:
+  ```
+  https://youtu.be/xxxx 邓紫棋 - 泡沫        artist - title
+  https://youtu.be/xxxx 邓紫棋               artist only (title still auto-detected)
+  https://youtu.be/xxxx
+  artist: 邓紫棋
+  title: 泡沫
+  album: Xposed                             one key per line (歌手/歌名/专辑 work too)
+  ```
+  For a playlist link, artist/album apply to every song and a title is
+  ignored.
+- **Tagging.** `scripts/backfill_metadata.py` identifies each file, in order:
+  AcoustID fingerprint lookup (real MusicBrainz artist/title/album), the
+  site's own track metadata (YouTube Music uploads have it), then parsing
+  the video title. Traditional Chinese is converted to simplified, and
+  alternate artist names (`G.E.M.`, `Sandy Lam`, ...) are mapped to the
+  library's name via `scripts/artist_aliases.json` -- add entries there as
+  you find more. Needs `ACOUSTID_API_KEY` (free, from
+  https://acoustid.org/api-key) for the fingerprint stage.
+- **Filing.** The bot mounts the whole library at `/music`. New files land
+  in `others/`, then move into the top-level folder named after the song's
+  artist if one exists (matched ignoring case/spaces/punctuation, so
+  `Taylor Swift` finds `TaylorSwift/`; for a multi-artist credit, the first
+  artist with a folder wins). No new artist folders are created.
+- **Dedup.** Two layers: yt-dlp's download archive
+  (`/music/.telebot/download-archive.txt`) skips any video ID downloaded
+  before -- seeded on every run with the `[<id>]` of every file already in
+  the library -- and after tagging, a song whose artist, title and length
+  (within ~6%) match an existing library file is deleted as a duplicate.
+  The tag index this uses is cached in `/music/.telebot/index.json`; the
+  first download reads every file's tags to build it, later ones only
+  re-read files that changed.
+- `COMMAND_TIMEOUT` is set to `1800` (30 minutes) in `.env`; raise it for
+  big playlists -- whatever finished before a timeout is kept.
 - yt-dlp needs occasional updates as sites change their pages. Bump it with:
   ```sh
   uv lock -P yt-dlp
-  docker compose up -d --build
+  ./nas-deploy.sh
   ```
-- After each file is saved, `scripts/backfill_metadata.py` fingerprints it
-  (Chromaprint/`fpcalc`), looks the fingerprint up against AcoustID to get
-  real artist/title/album from MusicBrainz, converts any traditional-Chinese
-  result to simplified, and writes the tags — yt-dlp's own tags are just the
-  video title, not proper metadata. One result line per file (tagged, no
-  confident match, or an error) is appended to the reply. Requires
-  `ACOUSTID_API_KEY` (free, from https://acoustid.org/api-key); without it,
-  downloads are left as-is and the reply says so.
-- The whole bot is single-threaded: while a download runs, it won't poll for
-  or process any other Telegram messages (including from other allowed
-  users) until it finishes. Fine for personal/light use; say so if you want
-  it made concurrent instead.
+- The whole bot is single-threaded: while a download runs, it won't process
+  any other Telegram messages until it finishes.
 
 ## Deploying to a NAS over SSH
 
@@ -95,12 +118,12 @@ Since `scripts/` is bind-mounted into the container, the NAS's own Docker
 engine needs it on the NAS's filesystem, not just in this repo — the script
 copies it over via `scp` on every deploy (Synology's `rsync` is wrapped by a
 restricted DSM daemon that rejects plain SSH transport, so `scp` is used
-instead). It also creates the downloads directory on the NAS if missing.
+instead). It also creates the music directory on the NAS if missing.
 
 Defaults (override with flags — run `./nas-deploy.sh --help` for the full
 list):
 - `--scripts-dir /volume1/docker/telebot/scripts`
-- `--downloads-dir /home/xdong/Music/others`
+- `--music-dir /home/xdong/Music`
 - `--platform linux/amd64` (pass `linux/arm64` for an ARM-based NAS)
 
 `.env` and `docker-compose.yml` stay on your dev machine — `docker compose`
@@ -133,7 +156,10 @@ container's environment, same as any other Compose deployment).
 | `STARTUP_GRACE_PERIOD` | no | `60` | Ignore messages older than this many seconds at startup |
 | `POLL_TIMEOUT` | no | `30` | Long-poll timeout passed to Telegram's `getUpdates` |
 | `LOG_LEVEL` | no | `INFO` | Python logging level |
-| `ACOUSTID_API_KEY` | no | — | Enables metadata backfill on downloads (see above); free key from acoustid.org/api-key |
+| `PROGRESS_INTERVAL` | no | `15` | Seconds between progress replies while a command is still running |
+| `ACOUSTID_API_KEY` | no | — | Enables fingerprint-based tagging of downloads (see above); free key from acoustid.org/api-key |
+| `MAX_PLAYLIST_ITEMS` | no | `200` | Cap on items downloaded from one playlist link |
+| `DOWNLOAD_DIR` | no | `/music/others` | Where new downloads land (and stay, if no artist folder matches) |
 
 ## Running without Docker
 

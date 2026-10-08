@@ -14,9 +14,10 @@ Options:
   --scripts-dir PATH      NAS-side path to hold scripts/, bind-mounted
                            read-only into the container at /scripts
                            (default: /volume1/docker/telebot/scripts)
-  --downloads-dir PATH    NAS-side path bind-mounted at /downloads, where
-                           yt-dlp (etc.) writes files
-                           (default: /home/xdong/Music/others)
+  --music-dir PATH        NAS-side music library, bind-mounted at /music;
+                           downloads land in its others/ folder and are
+                           moved into matching artist folders
+                           (default: /home/xdong/Music)
   --puid UID              UID the container runs as, so downloaded files are
                            owned by you instead of root (default: 1000)
   --pgid GID              GID the container runs as (default: 10)
@@ -35,7 +36,7 @@ die() { echo "error: $1" >&2; exit 1; }
 # ── parse args ────────────────────────────────────────────────────────────────
 NAS_HOST=""
 SCRIPTS_DIR_NAS="/volume1/docker/telebot/scripts"
-DOWNLOADS_DIR_NAS="/home/xdong/Music/others"
+MUSIC_DIR_NAS="/home/xdong/Music"
 PUID="1000"
 PGID="10"
 PLATFORM="linux/amd64"
@@ -47,7 +48,7 @@ while [[ $# -gt 0 ]]; do
   case $1 in
     --host)          NAS_HOST="$2";          shift 2 ;;
     --scripts-dir)   SCRIPTS_DIR_NAS="$2";   shift 2 ;;
-    --downloads-dir) DOWNLOADS_DIR_NAS="$2"; shift 2 ;;
+    --music-dir)     MUSIC_DIR_NAS="$2";     shift 2 ;;
     --puid)          PUID="$2";              shift 2 ;;
     --pgid)          PGID="$2";              shift 2 ;;
     --platform)      PLATFORM="$2";          shift 2 ;;
@@ -75,7 +76,7 @@ fi
 
 nas_docker()  { docker --context "$CONTEXT_NAME" "$@"; }
 nas_compose() {
-  SCRIPTS_DIR="$SCRIPTS_DIR_NAS" DOWNLOADS_DIR="$DOWNLOADS_DIR_NAS" \
+  SCRIPTS_DIR="$SCRIPTS_DIR_NAS" MUSIC_LIBRARY_DIR="$MUSIC_DIR_NAS" \
     PUID="$PUID" PGID="$PGID" \
     docker --context "$CONTEXT_NAME" compose -f "$COMPOSE_FILE" "$@"
 }
@@ -120,7 +121,7 @@ fi
 # scripts/ is bind-mounted into the container, which means the NAS's own
 # Docker engine reads it straight off the NAS filesystem -- it has no access
 # to this repo on your dev machine. Sync it over on every deploy so it's
-# never stale, and make sure the downloads dir exists.
+# never stale, and make sure the music dir exists.
 #
 # scp, not rsync: Synology (and some other NAS) ship an rsync build wrapped
 # by DSM's own restricted daemon that rejects ssh-transport paths outside
@@ -131,7 +132,7 @@ fi
 # errors on some NAS sshd builds when copying a directory recursively.
 echo "Syncing scripts/ to $NAS_SSH_HOST:$SCRIPTS_DIR_NAS ..."
 SCRIPTS_DIR_PARENT="$(dirname "$SCRIPTS_DIR_NAS")"
-ssh "$NAS_SSH_HOST" "rm -rf '$SCRIPTS_DIR_NAS' && mkdir -p '$SCRIPTS_DIR_PARENT' '$DOWNLOADS_DIR_NAS'"
+ssh "$NAS_SSH_HOST" "rm -rf '$SCRIPTS_DIR_NAS' && mkdir -p '$SCRIPTS_DIR_PARENT' '$MUSIC_DIR_NAS'"
 scp -O -r "$REPO_ROOT/scripts" "$NAS_SSH_HOST:$SCRIPTS_DIR_PARENT/"
 # scp copies the local "scripts" folder under that name; rename it if
 # --scripts-dir asked for a different leaf name.
@@ -160,7 +161,7 @@ echo "Starting service on NAS ($NAS_IP)..."
 nas_compose up -d --no-build --force-recreate
 
 echo ""
-echo "Deployed. Scripts: $SCRIPTS_DIR_NAS  Downloads: $DOWNLOADS_DIR_NAS"
+echo "Deployed. Scripts: $SCRIPTS_DIR_NAS  Music: $MUSIC_DIR_NAS"
 echo "Message your bot on Telegram to confirm it's responding."
 
 if $DO_LOGS; then
