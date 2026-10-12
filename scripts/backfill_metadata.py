@@ -94,7 +94,7 @@ def best_match(resp):
     rec = next((r for r in top.get("recordings") or [] if r.get("title") and r.get("artists")), None)
     if rec is None:
         return {"score": score, "artist": None, "title": None, "album": None}
-    artist = ", ".join(a["name"] for a in rec.get("artists", []))
+    artist = "/".join(a["name"] for a in rec.get("artists", []))
     title = rec.get("title")
     rgs = rec.get("releasegroups") or []
     album = next((rg.get("title") for rg in rgs if rg.get("type") == "Album"), None)
@@ -199,7 +199,7 @@ def parse_brackets(base):
     # prefix as the artist swallows that text too. Bail rather than guess.
     if any(len(a) > 5 for a in artists):
         return None, None
-    artist = ", ".join(dict.fromkeys(artists))
+    artist = "/".join(dict.fromkeys(artists))
     return artist, title
 
 

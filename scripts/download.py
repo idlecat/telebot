@@ -165,7 +165,7 @@ def site_metadata(info):
     auto-generated "Provided to YouTube" uploads -- not the video title."""
     artists = info.get("artists") or ([info["artist"]] if info.get("artist") else [])
     return {
-        "artist": ", ".join(dict.fromkeys(artists)) or None,
+        "artist": "/".join(dict.fromkeys(artists)) or None,
         "title": info.get("track"),
         "album": info.get("album"),
     }
